@@ -11,6 +11,9 @@ const today = new Date().toLocaleDateString();
 const myUrl = "https://www.unibo.it/UniboWeb/Utils/OrarioLezioni/RestService.aspx?SearchType=OccupazioneAule&Data="+today+"&Edificio=EST_EXZUCC1";
 // console.log(myUrl);
 
+const res = Request('GET', myUrl);
+const body = res.getBody().toString('utf8');
+
 const locations = MySyncModule.executeSyncQuery("SELECT Nome, Descrizione, Posti FROM informazioni", (error, result) => {
   if (error) {
     throw error;
@@ -72,7 +75,7 @@ const locations = MySyncModule.executeSyncQuery("SELECT Nome, Descrizione, Posti
   });
   return locs;
 });
-// console.log(locations[83]);
+// console.log(locations);
 
 const professors = [];
 locations.forEach(item => {
@@ -90,14 +93,20 @@ locations.forEach(item => {
 // console.log(professors);
 
 const activities = [];
-var res = Request('GET', myUrl);
-const body = res.getBody().toString('utf8');
 body.split("<Evento>").forEach(item => {
   if (!item.includes("?xml")) {
     activities.push(item.split("<Descrizione>")[1].split("<")[0]);
   }
 });
 // console.log(activities);
+
+const classroomsWithActivities = [];
+body.split("<Aula>").forEach(item => {
+  if (!item.includes("?xml")) {
+    classroomsWithActivities.push(item.split("<Descrizione>")[1].split("<")[0]);
+  }
+});
+// console.log(classroomsWithActivities);
 
 // ==============================================================================================================================================================
 
@@ -140,20 +149,57 @@ const CompletedPathFinderHandler = {
     const destination = handlerInput.requestEnvelope.request.intent.slots.destination.value;
     const disability = handlerInput.requestEnvelope.request.intent.slots.disability.value;
     var speechOutput = `mi dispiace ma non capisco: ${destination}. Prova semplicemente a dirmi il nome dell'aula, del laboratorio o del professore da cui devi andare oppure dimmi il nome preciso della lezione o dell'evento a cui devi partecipare`;
-    var isLocation = false;
-    locations.forEach(item => {
-      const locaName = item.name();
-      if(destination.includes(locaName)) {
-        isLocation = true;
+
+    // cerco se nella stanza che ha richiesto (es un aula) c'è qualche evento oggi
+    var isClassWithAct = false;
+    classroomsWithActivities.forEach(classroom => {
+      if(destination.includes(classroom.toLowerCase())) {
+        isClassWithAct = true;
+        speechOutput = `oggi in ${classroom} ci si terranno i seguenti eventi: `;
+        var previousItem;
+        const events = [];
+        const eventsTimetables = [];
+        body.split("<Aula>").forEach(item => {
+          if (item.split("<Descrizione>")[1].split("<")[0] === classroom) {
+            events.push(previousItem.split("<Evento>")[1].split("<Descrizione>")[1].split("<")[0]);
+            eventsTimetables.push(previousItem.split("<Evento>")[1].split("<OraInizio>")[1].split("<")[0]);
+            eventsTimetables.push(previousItem.split("<Evento>")[1].split("<OraFine>")[1].split("<")[0]);
+          }
+          previousItem = item;
+        });
+        var index = 0;
+        events.forEach(item => {
+          // console.log(`${item} in ${classroom} inizia alle ${eventsTimetables[index]} e finisce alle ${eventsTimetables[index+1]}`);
+          speechOutput = speechOutput + `${item} che inizia alle ${eventsTimetables[index]} e finisce alle ${eventsTimetables[index+1]}, `;
+          index = index + 2;
+        });
         if (disability.includes('no') || disability.includes('nesssuna')) {
-          speechOutput = `per raggiungere ${locaName} devi ...`;
+          speechOutput = speechOutput + `. Per raggiungere ${classroom} devi ...`;
         } else {
-          speechOutput = `per raggiungere ${locaName} con disabilità ${disability}, devi ...`;
+          speechOutput = `per raggiungere ${classroom} con disabilità ${disability}, devi ...`;
         }
       }
     });
+
+    // se non c'è nulla, cerco se la stanza che ha richiesto è tra quelle che conosco
+    if(!isClassWithAct) {
+      var isLocation = false;
+      locations.forEach(item => {
+        const locaName = item.name().toLowerCase().substring(1);
+        if(destination.includes(locaName)) {
+          isLocation = true;
+          speechOutput = `oggi in ${locaName} non si terrà alcun evento o lezione, ma se vuoi raggiungere ${locaName}`;
+          if (disability.includes('no') || disability.includes('nesssuna')) {
+            speechOutput = speechOutput + ` devi ...`;
+          } else {
+            speechOutput = speechOutput + ` con disabilità ${disability}, devi ...`;
+          }
+        }
+      });
+    }
     
-    if(!isLocation) {
+    //se non è nessuna delle 2 precedenti, allora controllo se mi ha chiesto il nome di un prof
+    if(!isLocation && !isClassWithAct) {
       var professorName;
       var thereIsProf = false;
       professors.forEach(prof => {
@@ -164,6 +210,7 @@ const CompletedPathFinderHandler = {
         }
       });
       
+      //guardo se mi ha detto anche il nome di un'attività
       activities.forEach(activity => {
         if(destination.includes(activity)) {
           speechOutput = `mi hai chiesto dove si trova ${activity}`;
@@ -172,12 +219,6 @@ const CompletedPathFinderHandler = {
           }
         }
       });
-      /*
-      // l'ho messo direttamente dentro a: if(!isLocation)
-      if(!isAnActivity && thereIsProf) {
-        speechOutput = `mi hai chiesto dove si trova il prof ${professorName}`
-      }
-      */
     }
     
     return handlerInput.responseBuilder
